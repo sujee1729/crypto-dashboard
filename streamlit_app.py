@@ -1,4 +1,3 @@
-
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -7,20 +6,23 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import plotly.graph_objects as go
 import plotly.express as px
 
+# ================================
+# PAGE CONFIG
+# ================================
 st.set_page_config(page_title="Crypto AI Dashboard", layout="wide")
-st.title("🚀 Advanced Crypto AI Trading Dashboard")
+st.title("🚀 Professional Crypto AI Trading Dashboard")
 
 # ================================
 # SIDEBAR CONTROLS
 # ================================
-st.sidebar.title("AI Controls")
+st.sidebar.header("AI Controls")
 coin_choice = st.sidebar.selectbox("Select Coin", ["BTC","ETH","BNB"])
 simulations = st.sidebar.slider("Monte Carlo Simulations", 100, 1000, 300)
 forecast_steps = st.sidebar.slider("Forecast Hours", 12, 72, 24)
 indicator_choice = st.sidebar.selectbox("Technical Indicator", ["None","Moving Average","RSI"])
 
 # ================================
-# LOAD DATA WITH CACHING
+# LOAD CSV DATA
 # ================================
 @st.cache_data
 def load_csv(file):
@@ -31,8 +33,21 @@ def load_csv(file):
 btc = load_csv("BTC.csv")
 eth = load_csv("ETH.csv")
 bnb = load_csv("BNB.csv")
-
 df = {"BTC": btc, "ETH": eth, "BNB": bnb}[coin_choice].copy()
+
+# ================================
+# LIVE PRICE FETCH
+# ================================
+@st.cache_data(ttl=60)
+def fetch_live_price(symbol):
+    try:
+        url = f"https://min-api.cryptocompare.com/data/price?fsym={symbol}&tsyms=USD"
+        data = requests.get(url).json()
+        return data.get("USD", df["close"].iloc[-1])
+    except:
+        return df["close"].iloc[-1]
+
+current_price = fetch_live_price(coin_choice)
 
 # ================================
 # PRICE CHART
@@ -64,8 +79,6 @@ st.plotly_chart(fig_price, use_container_width=True)
 # ================================
 df["returns"] = df["close"].pct_change()
 volatility = df["returns"].std() * np.sqrt(24)
-
-# Crash risk
 risk = "HIGH" if volatility>0.05 else "MEDIUM" if volatility>0.03 else "LOW"
 
 # ================================
@@ -87,23 +100,24 @@ def monte_carlo(price_series, simulations, steps):
 
 mc = monte_carlo(df["close"], simulations, forecast_steps)
 
-# Monte Carlo plot
-st.subheader("Monte Carlo Forecast")
+# Monte Carlo percentile plot
 mc_df = pd.DataFrame(mc.T)
+percentiles = mc_df.quantile([0.25,0.5,0.75], axis=1).T
 fig_mc = go.Figure()
-for i in range(min(100, simulations)):
-    fig_mc.add_trace(go.Scatter(y=mc_df[i], mode="lines", line=dict(width=1), opacity=0.3))
+fig_mc.add_trace(go.Scatter(y=percentiles[0.5], name="Median", line=dict(color="yellow")))
+fig_mc.add_trace(go.Scatter(y=percentiles[0.25], name="25th percentile", line=dict(dash="dash", color="red")))
+fig_mc.add_trace(go.Scatter(y=percentiles[0.75], name="75th percentile", line=dict(dash="dash", color="green")))
 fig_mc.update_layout(template="plotly_dark", title="Monte Carlo Forecast")
+st.subheader("Monte Carlo Forecast")
 st.plotly_chart(fig_mc, use_container_width=True)
 
 # ================================
 # PREDICTIONS & AI SIGNAL
 # ================================
-final_prices = mc[:, -1]
+final_prices = mc[:,-1]
 expected_price = np.mean(final_prices)
-bullish_price = np.percentile(final_prices, 75)
-bearish_price = np.percentile(final_prices, 25)
-current_price = df["close"].iloc[-1]
+bullish_price = np.percentile(final_prices,75)
+bearish_price = np.percentile(final_prices,25)
 prob_up = np.sum(final_prices>current_price)/len(final_prices)
 signal = "BULLISH" if prob_up>0.6 else "BEARISH" if prob_up<0.4 else "NEUTRAL"
 
@@ -136,16 +150,28 @@ st.write("Expected Profit:", round(profit,2))
 # NEWS SENTIMENT
 # ================================
 st.subheader("Crypto News Sentiment")
-url="https://min-api.cryptocompare.com/data/v2/news/?lang=EN"
-response=requests.get(url)
-data=response.json()
-news_list = [a["title"] for a in data.get("Data",[])[:10]]
+try:
+    response = requests.get("https://min-api.cryptocompare.com/data/v2/news/?lang=EN")
+    data = response.json()
+except:
+    data = {}
+
+news_list = []
+for article in data.get("Data", []):
+    title = article.get("title")
+    if title:
+        news_list.append(title)
+    if len(news_list) >= 10:
+        break
+
+if not news_list:
+    news_list = ["No news available"]
 
 analyzer = SentimentIntensityAnalyzer()
 scores = [analyzer.polarity_scores(n)["compound"] for n in news_list]
-positive=sum(1 for s in scores if s>0.2)
-negative=sum(1 for s in scores if s<-0.2)
-neutral=sum(1 for s in scores if -0.2<=s<=0.2)
+positive = sum(1 for s in scores if s>0.2)
+neutral = sum(1 for s in scores if -0.2<=s<=0.2)
+negative = sum(1 for s in scores if s<-0.2)
 
 col7,col8,col9 = st.columns(3)
 col7.metric("Positive News", positive)
@@ -155,7 +181,6 @@ col9.metric("Negative News", negative)
 fig_news = px.pie(
     names=["Positive","Neutral","Negative"],
     values=[positive,neutral,negative],
-    color=["Positive","Neutral","Negative"],
     color_discrete_map={"Positive":"green","Neutral":"gray","Negative":"red"}
 )
 fig_news.update_layout(template="plotly_dark")
