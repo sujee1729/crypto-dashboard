@@ -10,7 +10,8 @@ import plotly.express as px
 # PAGE CONFIG
 # ================================
 st.set_page_config(page_title="Crypto AI Dashboard", layout="wide")
-st.title("🚀 Professional Crypto AI Trading Dashboard")
+st.title("🚀 OpenClaw AI — Crypto Intelligence Dashboard")
+
 
 # ================================
 # SIDEBAR CONTROLS
