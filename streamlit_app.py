@@ -12,7 +12,6 @@ import plotly.express as px
 st.set_page_config(page_title="Crypto AI Dashboard", layout="wide")
 st.title("🚀 OpenClaw AI — Crypto Intelligence Dashboard")
 
-
 # ================================
 # SIDEBAR CONTROLS
 # ================================
@@ -37,18 +36,9 @@ bnb = load_csv("BNB.csv")
 df = {"BTC": btc, "ETH": eth, "BNB": bnb}[coin_choice].copy()
 
 # ================================
-# LIVE PRICE FETCH
+# CURRENT PRICE (FIXED)
 # ================================
-@st.cache_data(ttl=60)
-def fetch_live_price(symbol):
-    try:
-        url = f"https://min-api.cryptocompare.com/data/price?fsym={symbol}&tsyms=USD"
-        data = requests.get(url).json()
-        return data.get("USD", df["close"].iloc[-1])
-    except:
-        return df["close"].iloc[-1]
-
-current_price = fetch_live_price(coin_choice)
+current_price = df["close"].iloc[-1]  # always last CSV value
 
 # ================================
 # PRICE CHART
@@ -83,71 +73,6 @@ volatility = df["returns"].std() * np.sqrt(24)
 risk = "HIGH" if volatility>0.05 else "MEDIUM" if volatility>0.03 else "LOW"
 
 # ================================
-# MONTE CARLO SIMULATION
-# ================================
-@st.cache_data
-def monte_carlo(price_series, simulations, steps):
-    last_price = price_series.iloc[-1]
-    returns = price_series.pct_change().dropna()
-    mu, sigma = returns.mean(), returns.std()
-    results = []
-    for _ in range(simulations):
-        prices = [last_price]
-        for _ in range(steps):
-            shock = np.random.normal(mu, sigma)
-            prices.append(prices[-1]*(1+shock))
-        results.append(prices)
-    return np.array(results)
-
-mc = monte_carlo(df["close"], simulations, forecast_steps)
-
-# Monte Carlo percentile plot
-mc_df = pd.DataFrame(mc.T)
-percentiles = mc_df.quantile([0.25,0.5,0.75], axis=1).T
-fig_mc = go.Figure()
-fig_mc.add_trace(go.Scatter(y=percentiles[0.5], name="Median", line=dict(color="yellow")))
-fig_mc.add_trace(go.Scatter(y=percentiles[0.25], name="25th percentile", line=dict(dash="dash", color="red")))
-fig_mc.add_trace(go.Scatter(y=percentiles[0.75], name="75th percentile", line=dict(dash="dash", color="green")))
-fig_mc.update_layout(template="plotly_dark", title="Monte Carlo Forecast")
-st.subheader("Monte Carlo Forecast")
-st.plotly_chart(fig_mc, use_container_width=True)
-
-# ================================
-# PREDICTIONS & AI SIGNAL
-# ================================
-final_prices = mc[:,-1]
-expected_price = np.mean(final_prices)
-bullish_price = np.percentile(final_prices,75)
-bearish_price = np.percentile(final_prices,25)
-prob_up = np.sum(final_prices>current_price)/len(final_prices)
-signal = "BULLISH" if prob_up>0.6 else "BEARISH" if prob_up<0.4 else "NEUTRAL"
-
-# ================================
-# AI METRICS
-# ================================
-st.subheader("AI Metrics")
-col1,col2,col3 = st.columns(3)
-col1.metric("Volatility", round(volatility,4))
-col2.metric("Crash Risk", risk)
-col3.metric("AI Signal", signal)
-
-col4,col5,col6 = st.columns(3)
-col4.metric("Current Price", round(current_price,2))
-col5.metric("Expected Price", round(expected_price,2))
-col6.metric("Bullish Target", round(bullish_price,2))
-
-# ================================
-# PORTFOLIO SIMULATOR
-# ================================
-st.subheader("Portfolio Simulator")
-initial = st.number_input("Initial Investment", 100, 100000, 1000)
-coins_owned = initial/current_price
-future_value = coins_owned*expected_price
-profit = future_value-initial
-st.write("Future Value:", round(future_value,2))
-st.write("Expected Profit:", round(profit,2))
-
-# ================================
 # NEWS SENTIMENT
 # ================================
 st.subheader("Crypto News Sentiment")
@@ -164,7 +89,6 @@ for article in data.get("Data", []):
         news_list.append(title)
     if len(news_list) >= 10:
         break
-
 if not news_list:
     news_list = ["No news available"]
 
@@ -192,12 +116,84 @@ for n in news_list:
     st.write("•", n)
 
 # ================================
+# MONTE CARLO SIMULATION (IMPROVED)
+# ================================
+@st.cache_data
+def monte_carlo(df_close, simulations, steps, sentiment_factor=0):
+    S0 = df_close.iloc[-1]
+    log_returns = np.log(df_close / df_close.shift(1)).dropna()
+    mu, sigma = log_returns.mean(), log_returns.std()
+    mu += sentiment_factor  # adjust with sentiment
+    
+    mc_results = []
+    for _ in range(simulations):
+        prices = [S0]
+        for _ in range(steps):
+            shock = np.random.normal(mu, sigma)
+            prices.append(prices[-1] * np.exp(shock))
+        mc_results.append(prices)
+    return np.array(mc_results)
+
+# Sentiment factor for MC
+sentiment_factor = 0.001 if positive > negative else -0.001 if negative > positive else 0
+mc = monte_carlo(df["close"], simulations, forecast_steps, sentiment_factor)
+
+# Monte Carlo percentiles plot
+mc_df = pd.DataFrame(mc.T)
+percentiles = mc_df.quantile([0.25,0.5,0.75], axis=1).T
+
+fig_mc = go.Figure()
+fig_mc.add_trace(go.Scatter(y=percentiles[0.5], name="Median", line=dict(color="yellow")))
+fig_mc.add_trace(go.Scatter(y=percentiles[0.25], name="25th percentile", line=dict(dash="dash", color="red")))
+fig_mc.add_trace(go.Scatter(y=percentiles[0.75], name="75th percentile", line=dict(dash="dash", color="green")))
+fig_mc.update_layout(template="plotly_dark", title="Monte Carlo Forecast")
+st.subheader("Monte Carlo Forecast")
+st.plotly_chart(fig_mc, use_container_width=True)
+
+# ================================
+# AI PREDICTIONS & SIGNAL
+# ================================
+final_prices = mc[:,-1]
+expected_price = np.mean(final_prices)
+bullish_price = np.percentile(final_prices, 75)
+bearish_price = np.percentile(final_prices, 25)
+prob_up = np.sum(final_prices > current_price) / len(final_prices)
+signal = "BULLISH" if prob_up > 0.6 else "BEARISH" if prob_up < 0.4 else "NEUTRAL"
+
+# ================================
+# AI METRICS
+# ================================
+st.subheader("AI Metrics")
+col1,col2,col3 = st.columns(3)
+col1.metric("Volatility", round(volatility,4))
+col2.metric("Crash Risk", risk)
+col3.metric("AI Signal", signal)
+
+col4,col5,col6 = st.columns(3)
+col4.metric("Current Price", round(current_price,2))
+col5.metric("Expected Price", round(expected_price,2))
+col6.metric("Bullish Target", round(bullish_price,2))
+
+# ================================
+# PORTFOLIO SIMULATOR
+# ================================
+st.subheader("Portfolio Simulator")
+initial = st.number_input("Initial Investment", 100, 100000, 1000)
+coins_owned = initial/current_price
+future_value = coins_owned * expected_price
+profit = future_value - initial
+
+st.write("Future Value:", round(future_value,2))
+st.write("Expected Profit:", round(profit,2))
+
+# ================================
 # MARKET HEATMAP
 # ================================
 st.subheader("Market Heatmap")
 coins_list = ["BTC","ETH","BNB","XRP","ADA"]
 changes = np.random.uniform(-5,5,len(coins_list))
 heat_df = pd.DataFrame({"Coin":coins_list, "Change":changes})
+
 fig_heat = px.bar(
     heat_df,
     x="Coin",
