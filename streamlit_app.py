@@ -249,5 +249,5 @@ profit = future_value - initial
 
 st.write("Future Value:", round(future_value,2))
 st.write("Expected Profit:", round(profit,2))
-i only stimyulate feb data so i need stimulate live data
+
 
