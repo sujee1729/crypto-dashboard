@@ -25,32 +25,49 @@ forecast_steps = st.sidebar.slider("Forecast Hours", 12, 72, 24)
 # ================================
 @st.cache_data(ttl=300)  # cache 5 min
 def fetch_binance_data(symbol, interval="1h", limit=500):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}USDT&interval={interval}&limit={limit}"
-    data = requests.get(url).json()
-    df = pd.DataFrame(data, columns=[
-        "open_time","open","high","low","close","volume",
-        "close_time","quote_asset_volume","num_trades",
-        "taker_buy_base","taker_buy_quote","ignore"
-    ])
-    df["timestamp"] = pd.to_datetime(df["close_time"], unit="ms")
-    df["close"] = df["close"].astype(float)
-    return df[["timestamp","close"]]
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}USDT&interval={interval}&limit={limit}"
+        data = requests.get(url, timeout=5).json()
+        df = pd.DataFrame(data, columns=[
+            "open_time","open","high","low","close","volume",
+            "close_time","quote_asset_volume","num_trades",
+            "taker_buy_base","taker_buy_quote","ignore"
+        ])
+        df["timestamp"] = pd.to_datetime(df["close_time"], unit="ms")
+        df["close"] = df["close"].astype(float)
+        return df[["timestamp","close"]]
+    except Exception as e:
+        st.warning(f"Could not fetch historical data: {e}")
+        return pd.DataFrame(columns=["timestamp","close"])
 
 df = fetch_binance_data(coin_choice)
 
 # ================================
 # LIVE PRICE
 # ================================
-def get_live_price(symbol):
+def get_live_price(symbol, fallback_df=None):
+    """
+    Get live price from Binance. 
+    If failed, fallback_df is used as the source of last price.
+    """
     try:
         url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}USDT"
-        data = requests.get(url).json()
+        data = requests.get(url, timeout=5).json()
         return float(data["price"])
     except:
-        return df["close"].iloc[-1]  # fallback
+        # Use fallback_df if provided and non-empty
+        if fallback_df is not None and not fallback_df.empty:
+            return fallback_df["close"].iloc[-1]
+        else:
+            return None
 
-current_price = get_live_price(coin_choice)
-st.success(f"Live Price: {round(current_price,2)} USD")
+current_price = get_live_price(coin_choice, fallback_df=df)
+
+if current_price is None:
+    st.error("Cannot fetch live price and no fallback data available.")
+    st.stop()
+else:
+    st.success(f"Live Price: {round(current_price,2)} USD")
 
 # ================================
 # PRICE CHART
@@ -71,12 +88,16 @@ volatility = df["returns"].std()
 # TREND DETECTION
 # ================================
 df["MA50"] = df["close"].rolling(50).mean()
-if current_price > df["MA50"].iloc[-1]:
-    trend = "BULLISH"
-    trend_boost = 0.01
+if not df["MA50"].isna().all():
+    if current_price > df["MA50"].iloc[-1]:
+        trend = "BULLISH"
+        trend_boost = 0.01
+    else:
+        trend = "BEARISH"
+        trend_boost = -0.01
 else:
-    trend = "BEARISH"
-    trend_boost = -0.01
+    trend = "NEUTRAL"
+    trend_boost = 0
 
 # ================================
 # NEWS SENTIMENT
@@ -84,7 +105,7 @@ else:
 st.subheader("News Sentiment")
 try:
     url = "https://min-api.cryptocompare.com/data/v2/news/?lang=EN"
-    news_data = requests.get(url).json()
+    news_data = requests.get(url, timeout=5).json()
 except:
     news_data = {}
 
@@ -127,7 +148,10 @@ def monte_carlo(df_close, S0, simulations, steps):
         mc.append(prices)
     return np.array(mc)
 
-mc = monte_carlo(df["close"], current_price, simulations, forecast_steps)
+if not df.empty:
+    mc = monte_carlo(df["close"], current_price, simulations, forecast_steps)
+else:
+    mc = np.array([[current_price]* (forecast_steps+1)] * simulations)
 
 # ================================
 # MONTE CARLO PLOT
