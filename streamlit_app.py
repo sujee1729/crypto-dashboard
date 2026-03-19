@@ -10,7 +10,7 @@ import plotly.express as px
 # PAGE CONFIG
 # ================================
 st.set_page_config(page_title="Crypto AI Dashboard", layout="wide")
-st.title("🚀 OpenClaw AI — Hybrid Crypto Intelligence")
+st.title("🚀 OpenClaw AI — Real-Time Hybrid Crypto Intelligence")
 
 # ================================
 # SIDEBAR
@@ -37,7 +37,7 @@ bnb = load_csv("BNB.csv")
 df = {"BTC": btc, "ETH": eth, "BNB": bnb}[coin_choice].copy()
 
 # ================================
-# LIVE + HISTORICAL PRICE
+# LIVE PRICE (KEY FIX)
 # ================================
 def get_live_price(symbol):
     try:
@@ -50,20 +50,17 @@ def get_live_price(symbol):
 live_price = get_live_price(coin_choice)
 historical_price = df["close"].iloc[-1]
 
-st.subheader("Price Comparison")
-
-col1, col2 = st.columns(2)
-col1.metric("Feb Closing Price", round(historical_price,2))
-
 if live_price:
-    col2.metric("Live Market Price", round(live_price,2))
+    current_price = live_price
+    st.success(f"Live Price: {round(current_price,2)}")
 else:
-    col2.metric("Live Market Price", "Unavailable")
+    current_price = historical_price
+    st.warning("Using historical price")
 
 # ================================
 # PRICE CHART
 # ================================
-st.subheader("Price Chart (February Dataset)")
+st.subheader("Price Chart (February Data)")
 
 fig = go.Figure()
 fig.add_trace(go.Scatter(x=df["timestamp"], y=df["close"], name="Price"))
@@ -71,10 +68,22 @@ fig.update_layout(template="plotly_dark")
 st.plotly_chart(fig, use_container_width=True)
 
 # ================================
-# VOLATILITY
+# RETURNS & VOLATILITY
 # ================================
 df["returns"] = df["close"].pct_change()
 volatility = df["returns"].std()
+
+# ================================
+# TREND DETECTION
+# ================================
+df["MA50"] = df["close"].rolling(50).mean()
+
+if current_price > df["MA50"].iloc[-1]:
+    trend = "BULLISH"
+    trend_boost = 0.01
+else:
+    trend = "BEARISH"
+    trend_boost = -0.01
 
 # ================================
 # NEWS SENTIMENT
@@ -92,7 +101,7 @@ for article in data.get("Data", []):
     title = article.get("title")
     if title:
         news_list.append(title)
-    if len(news_list) >= 10:
+    if len(news_list) >= 15:
         break
 
 if not news_list:
@@ -106,35 +115,29 @@ positive = sum(1 for s in scores if s > 0.2)
 neutral = sum(1 for s in scores if -0.2 <= s <= 0.2)
 negative = sum(1 for s in scores if s < -0.2)
 
-colA, colB, colC = st.columns(3)
-colA.metric("Positive", positive)
-colB.metric("Neutral", neutral)
-colC.metric("Negative", negative)
+sentiment_score = (positive - negative) / max(len(scores),1)
+sentiment_boost = sentiment_score * 0.01
+
+col1,col2,col3 = st.columns(3)
+col1.metric("Positive", positive)
+col2.metric("Neutral", neutral)
+col3.metric("Negative", negative)
 
 # ================================
-# TREND (REAL-TIME)
+# MONTE CARLO (LIVE START)
 # ================================
-df["MA50"] = df["close"].rolling(50).mean()
-
-if live_price:
-    if live_price > df["MA50"].iloc[-1]:
-        real_trend = "BULLISH"
-    else:
-        real_trend = "BEARISH"
-else:
-    real_trend = "UNKNOWN"
-
-# ================================
-# MONTE CARLO (FEB MODEL)
-# ================================
-def monte_carlo(df_close, simulations, steps):
-
-    S0 = df_close.iloc[-1]
+def monte_carlo(df_close, live_price, simulations, steps):
 
     log_returns = np.log(df_close / df_close.shift(1)).dropna()
     mu = log_returns.mean()
     sigma = log_returns.std()
 
+    # Combine intelligence
+    mu = mu + trend_boost + sentiment_boost
+
+    S0 = live_price  # 🔥 KEY FIX
+
+    dt = 1
     mc = []
 
     for _ in range(simulations):
@@ -142,8 +145,8 @@ def monte_carlo(df_close, simulations, steps):
 
         for _ in range(steps):
             shock = np.random.normal(0,1)
-            drift = (mu - 0.5 * sigma**2)
-            diffusion = sigma * shock
+            drift = (mu - 0.5 * sigma**2) * dt
+            diffusion = sigma * np.sqrt(dt) * shock
 
             price = prices[-1] * np.exp(drift + diffusion)
             prices.append(price)
@@ -152,79 +155,82 @@ def monte_carlo(df_close, simulations, steps):
 
     return np.array(mc)
 
-mc = monte_carlo(df["close"], simulations, forecast_steps)
+mc = monte_carlo(df["close"], current_price, simulations, forecast_steps)
 
 # ================================
-# HISTORICAL AI SIGNAL
+# MONTE CARLO PLOT
+# ================================
+mc_df = pd.DataFrame(mc.T)
+percentiles = mc_df.quantile([0.25,0.5,0.75], axis=1).T
+
+fig_mc = go.Figure()
+fig_mc.add_trace(go.Scatter(y=percentiles[0.5], name="Median"))
+fig_mc.add_trace(go.Scatter(y=percentiles[0.25], name="25%", line=dict(dash="dash")))
+fig_mc.add_trace(go.Scatter(y=percentiles[0.75], name="75%", line=dict(dash="dash")))
+fig_mc.update_layout(template="plotly_dark")
+
+st.subheader("Monte Carlo Forecast (Live Based)")
+st.plotly_chart(fig_mc, use_container_width=True)
+
+# ================================
+# AI DECISION
 # ================================
 final_prices = mc[:,-1]
 
 expected_price = np.mean(final_prices)
+bullish_price = np.percentile(final_prices,75)
 
-prob_up_hist = np.sum(final_prices > historical_price) / len(final_prices)
+prob_up = np.sum(final_prices > current_price) / len(final_prices)
 
-if prob_up_hist > 0.6:
-    hist_signal = "BULLISH"
-elif prob_up_hist < 0.4:
-    hist_signal = "BEARISH"
+confidence = abs(prob_up - 0.5) * 200
+
+if prob_up > 0.6:
+    signal = "STRONG BULLISH" if confidence > 30 else "BULLISH"
+elif prob_up < 0.4:
+    signal = "STRONG BEARISH" if confidence > 30 else "BEARISH"
 else:
-    hist_signal = "NEUTRAL"
+    signal = "NEUTRAL"
 
 # ================================
-# REAL-TIME SIGNAL
+# METRICS
 # ================================
-if live_price:
-    if live_price > historical_price:
-        realtime_signal = "BULLISH"
-    else:
-        realtime_signal = "BEARISH"
-else:
-    realtime_signal = "UNKNOWN"
+st.subheader("AI Metrics")
+
+col1,col2,col3 = st.columns(3)
+col1.metric("Volatility", round(volatility,4))
+col2.metric("Trend", trend)
+col3.metric("AI Signal", signal)
+
+col4,col5,col6 = st.columns(3)
+col4.metric("Current Price", round(current_price,2))
+col5.metric("Expected Price", round(expected_price,2))
+col6.metric("Bullish Target", round(bullish_price,2))
 
 # ================================
-# FINAL AI DECISION
+# AI EXPLANATION
 # ================================
-if hist_signal == "BEARISH" and realtime_signal == "BULLISH":
-    final_signal = "HOLD / REVERSAL"
-elif hist_signal == "BULLISH" and realtime_signal == "BEARISH":
-    final_signal = "UNCERTAIN"
-else:
-    final_signal = hist_signal
+st.subheader("AI Decision Explanation")
 
-# ================================
-# AI METRICS
-# ================================
-st.subheader("AI Decision Engine")
-
-col1, col2, col3 = st.columns(3)
-col1.metric("Historical AI (Feb)", hist_signal)
-col2.metric("Real-Time Market", realtime_signal)
-col3.metric("Final Decision", final_signal)
-
-st.write("Expected Price (Feb Model):", round(expected_price,2))
-st.write("Real-Time Trend:", real_trend)
-
-# ================================
-# EXPLANATION
-# ================================
-st.subheader("AI Explanation")
+st.write(f"Confidence: {round(confidence,1)}%")
+st.write(f"Trend: {trend}")
+st.write(f"Sentiment Score: {round(sentiment_score,2)}")
 
 reasons = []
 
-if hist_signal == "BEARISH":
-    reasons.append("February dataset shows bearish structure")
+if trend == "BULLISH":
+    reasons.append("Price above MA50")
+else:
+    reasons.append("Price below MA50")
 
-if hist_signal == "BULLISH":
-    reasons.append("February dataset shows bullish structure")
+if sentiment_score > 0:
+    reasons.append("Positive news sentiment")
+elif sentiment_score < 0:
+    reasons.append("Negative news sentiment")
 
-if realtime_signal == "BULLISH":
-    reasons.append("Current market is above February closing price")
-
-if realtime_signal == "BEARISH":
-    reasons.append("Current market below February closing price")
-
-if final_signal == "HOLD / REVERSAL":
-    reasons.append("Market shows possible reversal from historical trend")
+if prob_up > 0.5:
+    reasons.append("Monte Carlo favors upside")
+else:
+    reasons.append("Monte Carlo favors downside")
 
 for r in reasons:
     st.write("•", r)
@@ -232,11 +238,11 @@ for r in reasons:
 # ================================
 # PORTFOLIO
 # ================================
-st.subheader("Portfolio Simulation")
+st.subheader("Portfolio Simulator")
 
 initial = st.number_input("Investment", 100, 100000, 1000)
 
-coins_owned = initial / historical_price
+coins_owned = initial / current_price
 future_value = coins_owned * expected_price
 profit = future_value - initial
 
