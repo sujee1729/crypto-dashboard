@@ -9,7 +9,7 @@ import plotly.express as px
 # ================================
 # PAGE CONFIG
 # ================================
-st.set_page_config(page_title="Crypto AI Dashboard", layout="wide")
+st.set_page_config(page_title="OpenClaw AI — Real-Time Crypto Dashboard", layout="wide")
 st.title("🚀 OpenClaw AI — Real-Time Crypto Dashboard")
 
 # ================================
@@ -22,33 +22,39 @@ forecast_steps = st.sidebar.slider("Forecast Hours", 12, 72, 24)
 indicator_choice = st.sidebar.selectbox("Technical Indicator", ["None", "Moving Average", "RSI"])
 
 # ================================
-# LOAD CSV DATA
+# FETCH HISTORICAL DATA FROM BINANCE
 # ================================
-@st.cache_data
-def load_csv(file):
-    df = pd.read_csv(file)
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
+@st.cache_data(ttl=600)
+def get_binance_klines(symbol="BTCUSDT", interval="1h", limit=720):
+    """
+    Fetch historical klines (OHLC) from Binance.
+    Default: last 30 days of hourly candles.
+    """
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    data = requests.get(url).json()
+    df = pd.DataFrame(data, columns=[
+        "Open_time","Open","High","Low","Close","Volume",
+        "Close_time","Quote_asset_volume","Number_of_trades",
+        "Taker_buy_base","Taker_buy_quote","Ignore"
+    ])
+    df["Close"] = df["Close"].astype(float)
+    df["Open_time"] = pd.to_datetime(df["Open_time"], unit='ms')
+    df = df[["Open_time","Close"]].rename(columns={"Open_time":"timestamp","Close":"close"})
     return df
 
-btc = load_csv("BTC.csv")
-eth = load_csv("ETH.csv")
-bnb = load_csv("BNB.csv")
-df = {"BTC": btc, "ETH": eth, "BNB": bnb}[coin_choice].copy()
+symbol_map = {"BTC":"BTCUSDT","ETH":"ETHUSDT","BNB":"BNBUSDT"}
+df = get_binance_klines(symbol_map[coin_choice], "1h", 720)
 
 # ================================
-# REAL-TIME PRICE FETCH (Binance)
+# FETCH LIVE PRICE
 # ================================
 @st.cache_data(ttl=10)
-def fetch_live_price_binance(symbol):
-    """Fetch current price from Binance API; fallback to CSV last close"""
-    try:
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}USDT"
-        data = requests.get(url).json()
-        return float(data.get("price", df["close"].iloc[-1]))
-    except:
-        return df["close"].iloc[-1]
+def get_live_price(symbol="BTCUSDT"):
+    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+    data = requests.get(url).json()
+    return float(data["price"])
 
-current_price = fetch_live_price_binance(coin_choice)
+current_price = get_live_price(symbol_map[coin_choice])
 
 # ================================
 # PRICE CHART
@@ -103,7 +109,7 @@ mc = monte_carlo(df["close"], simulations, forecast_steps)
 
 # Monte Carlo percentile plot
 mc_df = pd.DataFrame(mc.T)
-percentiles = mc_df.quantile([0.25, 0.5, 0.75], axis=1).T
+percentiles = mc_df.quantile([0.25,0.5,0.75], axis=1).T
 fig_mc = go.Figure()
 fig_mc.add_trace(go.Scatter(y=percentiles[0.5], name="Median", line=dict(color="yellow")))
 fig_mc.add_trace(go.Scatter(y=percentiles[0.25], name="25th percentile", line=dict(dash="dash", color="red")))
@@ -119,8 +125,6 @@ final_prices = mc[:, -1]
 expected_price = np.mean(final_prices)
 bullish_price = np.percentile(final_prices, 75)
 bearish_price = np.percentile(final_prices, 25)
-
-# Signal based on live current price
 prob_up = np.sum(final_prices > current_price) / len(final_prices)
 signal = "BULLISH" if prob_up > 0.6 else "BEARISH" if prob_up < 0.4 else "NEUTRAL"
 
@@ -192,7 +196,7 @@ for n in news_list:
 # ================================
 st.subheader("Market Heatmap")
 coins_list = ["BTC", "ETH", "BNB", "XRP", "ADA"]
-changes = np.random.uniform(-5, 5, len(coins_list))
+changes = np.random.uniform(-5, 5, len(coins_list))  # placeholder, can replace with live % change
 heat_df = pd.DataFrame({"Coin": coins_list, "Change": changes})
 fig_heat = px.bar(
     heat_df,
